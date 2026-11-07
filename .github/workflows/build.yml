@@ -1,0 +1,124 @@
+import os
+import zipfile
+
+# Код EventHandler
+java_code = """package com.example.gripmod;
+import cam72cam.immersiverailroading.entity.EntityTrainPart;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Gui;
+import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.inventory.EntityEquipmentSlot;
+import net.minecraft.item.ItemStack;
+import net.minecraft.util.DamageSource;
+import net.minecraft.util.math.AxisAlignedBB;
+import net.minecraft.util.text.TextComponentString;
+import net.minecraftforge.client.event.RenderGameOverlayEvent;
+import net.minecraftforge.event.entity.living.LivingEvent;
+import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
+import net.minecraftforge.fml.relauncher.Side;
+import net.minecraftforge.fml.relauncher.SideOnly;
+import java.util.HashMap;
+import java.util.List;
+import java.util.UUID;
+
+public class GripEventHandler {
+    private static final HashMap<UUID, Float> playerGripFatigue = new HashMap<>();
+    public static final DamageSource TRAIN_FALL = new DamageSource("train_fall").setDamageBypassesArmor();
+
+    @SubscribeEvent
+    public void onPlayerUpdate(LivingEvent.LivingUpdateEvent event) {
+        if (!(event.getEntityLiving() instanceof EntityPlayer)) return;
+        EntityPlayer player = (EntityPlayer) event.getEntityLiving();
+        if (player.world.isRemote) return;
+
+        UUID uuid = player.getUniqueID();
+        AxisAlignedBB checkArea = player.getEntityBoundingBox().grow(0.5, 0.5, 0.5);
+        List<EntityTrainPart> trains = player.world.getEntitiesWithinAABB(EntityTrainPart.class, checkArea);
+        
+        if (player.isRiding()) { playerGripFatigue.put(uuid, 0f); return; }
+
+        if (!trains.isEmpty()) {
+            EntityTrainPart train = trains.get(0);
+            double speedKmH = Math.sqrt(train.motionX * train.motionX + train.motionZ * train.motionZ) * 20 * 3.6;
+
+            if (speedKmH > 5.0) {
+                float fatigueDrain = (float) (speedKmH * 0.02);
+                ItemStack offhand = player.getItemStackFromSlot(EntityEquipmentSlot.OFFHAND);
+                if (!offhand.isEmpty() && offhand.getItem() == GripMod.GLOVE_ITEM) { fatigueDrain *= 0.7f; }
+
+                float currentFatigue = playerGripFatigue.getOrDefault(uuid, 0f) + fatigueDrain;
+                if (currentFatigue >= 100f) {
+                    playerGripFatigue.put(uuid, 0f);
+                    player.attackEntityFrom(TRAIN_FALL, 1000f);
+                    player.sendMessage(new TextComponentString("§cВы не удержались и сорвались с поезда!"));
+                } else {
+                    playerGripFatigue.put(uuid, currentFatigue);
+                    player.motionX = train.motionX;
+                    player.motionZ = train.motionZ;
+                    if (player.motionY < 0) player.motionY = 0;
+                    player.fallDistance = 0; 
+                }
+            } else { decayGrip(uuid); }
+        } else { decayGrip(uuid); }
+    }
+
+    private void decayGrip(UUID uuid) {
+        if (playerGripFatigue.containsKey(uuid)) {
+            float current = playerGripFatigue.get(uuid) - 1.0f;
+            if (current <= 0) playerGripFatigue.remove(uuid);
+            else playerGripFatigue.put(uuid, current);
+        }
+    }
+
+    @SideOnly(Side.CLIENT)
+    @SubscribeEvent
+    public void onRenderOverlay(RenderGameOverlayEvent.Post event) {
+        if (event.getType() != RenderGameOverlayEvent.ElementType.HOTBAR) return;
+        Minecraft mc = Minecraft.getMinecraft();
+        EntityPlayer player = mc.player;
+        if (player == null) return;
+        int width = event.getResolution().getScaledWidth();
+        int height = event.getResolution().getScaledHeight();
+
+        boolean holdsSpeedometer = player.getHeldItemMainhand().getItem() == GripMod.SPEEDOMETER_ITEM || player.getHeldItemOffhand().getItem() == GripMod.SPEEDOMETER_ITEM;
+        if (holdsSpeedometer) {
+            List<EntityTrainPart> trains = player.world.getEntitiesWithinAABB(EntityTrainPart.class, player.getEntityBoundingBox().grow(1, 1, 1));
+            double speedKmH = 0;
+            if (!trains.isEmpty()) {
+                EntityTrainPart train = trains.get(0);
+                speedKmH = Math.sqrt(train.motionX * train.motionX + train.motionZ * train.motionZ) * 20 * 3.6;
+            }
+            String speedText = String.format("Скорость: %.1f км/ч", speedKmH);
+            mc.fontRenderer.drawStringWithShadow(speedText, (width - mc.fontRenderer.getStringWidth(speedText)) / 2, height - 55, 0x00FF00);
+        }
+
+        float fatigue = playerGripFatigue.getOrDefault(player.getUniqueID(), 0f);
+        if (fatigue > 0.1f) {
+            int barWidth = 100, barHeight = 8, x = (width - barWidth) / 2, y = height - 70;
+            Gui.drawRect(x, y, x + barWidth, y + barHeight, 0xFF555555);
+            int fillWidth = (int) (barWidth * (fatigue / 100f));
+            int color = fatigue > 75f ? 0xFFFF0000 : (fatigue > 40f ? 0xFFFFFF00 : 0xFF00FF00);
+            Gui.drawRect(x, y, x + fillWidth, y + barHeight, color);
+            mc.fontRenderer.drawStringWithShadow("Выносливость хвата", (width - mc.fontRenderer.getStringWidth("Выносливость хвата")) / 2, y - 10, 0xFFFFFF);
+        }
+    }
+}"""
+
+os.makedirs("src/main/java/com/example/gripmod", exist_ok=True)
+os.makedirs("src/main/resources", exist_ok=True)
+os.makedirs(".github/workflows", exist_ok=True)
+
+with open("src/main/java/com/example/gripmod/GripEventHandler.java", "w") as f: f.write(java_code)
+with open("src/main/java/com/example/gripmod/GripMod.java", "w") as f: f.write('package com.example.gripmod;\nimport net.minecraft.item.Item;\nimport net.minecraftforge.common.MinecraftForge;\nimport net.minecraftforge.event.RegistryEvent;\nimport net.minecraftforge.fml.common.Mod;\nimport net.minecraftforge.fml.common.event.FMLInitializationEvent;\nimport net.minecraftforge.fml.common.eventhandler.SubscribeEvent;\nimport net.minecraftforge.fml.common.registry.GameRegistry;\n@Mod(modid="gripmod", name="Grip Mod", version="1.0")\n@Mod.EventBusSubscriber\npublic class GripMod {\n public static final String MODID="gripmod";\n @GameRegistry.ObjectHolder("gripmod:glove_item")\n public static final Item GLOVE_ITEM = null;\n @GameRegistry.ObjectHolder("gripmod:speedometer_item")\n public static final Item SPEEDOMETER_ITEM = null;\n @Mod.EventHandler\n public void init(FMLInitializationEvent e) { MinecraftForge.EVENT_BUS.register(new GripEventHandler()); }\n @SubscribeEvent\n public static void r(RegistryEvent.Register<Item> event) {\n event.getRegistry().register(new ItemGlove().setRegistryName("glove_item").setUnlocalizedName("glove_item"));\n event.getRegistry().register(new ItemSpeedometer().setRegistryName("speedometer_item").setUnlocalizedName("speedometer_item"));\n }\n}')
+with open("src/main/java/com/example/gripmod/ItemGlove.java", "w") as f: f.write('package com.example.gripmod;\nimport net.minecraft.creativetabs.CreativeTabs;\nimport net.minecraft.item.Item;\npublic class ItemGlove extends Item { public ItemGlove() { setCreativeTab(CreativeTabs.MISC); setMaxStackSize(1); } }')
+with open("src/main/java/com/example/gripmod/ItemSpeedometer.java", "w") as f: f.write('package com.example.gripmod;\nimport net.minecraft.creativetabs.CreativeTabs;\nimport net.minecraft.item.Item;\npublic class ItemSpeedometer extends Item { public ItemSpeedometer() { setCreativeTab(CreativeTabs.MISC); setMaxStackSize(1); } }')
+with open("src/main/resources/mcmod.info", "w") as f: f.write('[{"modid": "gripmod", "name": "Grip Mod", "version": "1.0", "mcversion": "1.12.2"}]')
+with open(".github/workflows/build.yml", "w") as f: f.write("name: Java CI\non: [push]\njobs:\n build:\n   runs-on: ubuntu-latest\n   steps:\n   - uses: actions/checkout@v3\n   - name: Set up JDK 8\n     uses: actions/setup-java@v3\n     with:\n       java-version: '8'\n       distribution: 'temurin'\n   - name: Setup Gradle\n     run: |\n       wget https://githubusercontent.com\n       gradle build || true\n   - name: Upload\n     uses: actions/upload-artifact@v3\n     with:\n       name: ModJar\n       path: build/libs/*.jar")
+
+with zipfile.ZipFile('/sdcard/Download/project.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+    for root, dirs, files in os.walk('src'):
+        for file in files: z.write(os.path.join(root, file))
+    for root, dirs, files in os.walk('.github'):
+        for file in files: z.write(os.path.join(root, file))
+
+print("Файл project.zip успешно создан в папке Загрузки!")
